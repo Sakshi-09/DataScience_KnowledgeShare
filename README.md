@@ -1,3 +1,1 @@
-# DataScience_KnowledgeShare
-
-All written artifacts from sessions to be shared in this repository. 
+This repository will house all codes for learning purposes and external experiments pertaining to data science
