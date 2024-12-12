@@ -1,0 +1,132 @@
+# Import necessary PySpark libraries
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, count, lit, when, percent_rank
+from pyspark.sql.window import Window
+
+# Initialize Spark session
+spark = SparkSession.builder \
+    .appName("Pipa Icepark Data Validation with Tests") \
+    .getOrCreate()
+
+# Load your Icepark dataset
+file_path = "path_to_your_pipa_dataset.icepark"
+pipa_df = spark.read.format("icepark").load(file_path)
+
+# Display the initial dataset
+print("Initial DataFrame:")
+pipa_df.show()
+
+# Validation Step 1: Check for duplicates
+def check_duplicates(df):
+    duplicates = df.groupBy(df.columns).count().filter(col("count") > 1)
+    return duplicates
+
+duplicates = check_duplicates(pipa_df)
+if duplicates.count() > 0:
+    print("Duplicate rows found:")
+    duplicates.show()
+    pipa_df = pipa_df.dropDuplicates()
+else:
+    print("No duplicate rows found.")
+
+# Validation Step 2: Ensure unique dates per channel
+def check_unique_dates(df):
+    non_unique_dates = df.groupBy("channel", "date").count().filter(col("count") > 1)
+    return non_unique_dates
+
+non_unique_dates = check_unique_dates(pipa_df)
+if non_unique_dates.count() > 0:
+    print("Non-unique dates found for some channels:")
+    non_unique_dates.show()
+else:
+    print("All dates are unique per channel.")
+
+# Validation Step 3: Check for null or missing values
+def check_missing_values(df):
+    null_counts = df.select(
+        [count(when(col(c).isNull(), c)).alias(c) for c in df.columns]
+    )
+    return null_counts
+
+null_counts = check_missing_values(pipa_df)
+print("Null or Missing Value Counts:")
+null_counts.show()
+
+# Validation Step 4: Identify days with volume < 10th percentile or > 90th percentile
+def find_percentile_outliers(df):
+    # Overall percentile calculation
+    window_spec = Window.orderBy("volume")
+    df = df.withColumn("volume_percent_rank", percent_rank().over(window_spec))
+
+    # Channel-level percentile calculation
+    channel_window_spec = Window.partitionBy("channel").orderBy("volume")
+    df = df.withColumn("channel_volume_percent_rank", percent_rank().over(channel_window_spec))
+
+    overall_outliers = df.filter(
+        (col("volume_percent_rank") < 0.1) | (col("volume_percent_rank") > 0.9)
+    )
+    channel_outliers = df.filter(
+        (col("channel_volume_percent_rank") < 0.1) | (col("channel_volume_percent_rank") > 0.9)
+    )
+
+    return overall_outliers, channel_outliers
+
+overall_outliers, channel_outliers = find_percentile_outliers(pipa_df)
+print("Days with overall outlier volumes:")
+overall_outliers.show()
+
+print("Days with channel-level outlier volumes:")
+channel_outliers.show()
+
+# Validation Step 5: Ensure non-negative volume and value
+def check_non_negative(df):
+    invalid_entries = df.filter((col("volume") < 0) | (col("value") < 0))
+    return invalid_entries
+
+invalid_entries = check_non_negative(pipa_df)
+if invalid_entries.count() > 0:
+    print("Invalid rows found with negative volume or value:")
+    invalid_entries.show()
+else:
+    print("All volume and value entries are valid.")
+
+# Save the validated dataset (optional)
+output_path = "path_to_validated_pipa_dataset.icepark"
+pipa_df.write.format("icepark").mode("overwrite").save(output_path)
+
+# Unit Tests
+def run_tests():
+    # Create a test dataset
+    test_data = [
+        ("2024-12-01", "channel1", 100, 1000),
+        ("2024-12-01", "channel1", 50, 500),  # Duplicate row
+        ("2024-12-02", "channel1", 0, 0),
+        ("2024-12-03", "channel2", -10, 200),  # Invalid entry
+        ("2024-12-04", "channel2", 500, 1500),
+    ]
+    test_columns = ["date", "channel", "volume", "value"]
+    test_df = spark.createDataFrame(test_data, test_columns)
+
+    # Test for duplicate rows
+    duplicates = check_duplicates(test_df)
+    assert duplicates.count() > 0, "Duplicate row test failed."
+
+    # Test for unique dates per channel
+    non_unique_dates = check_unique_dates(test_df)
+    assert non_unique_dates.count() > 0, "Unique date per channel test failed."
+
+    # Test for null or missing values
+    null_counts = check_missing_values(test_df)
+    assert null_counts.filter(col("volume") > 0).count() == 0, "Null value test failed."
+
+    # Test for invalid volume or value
+    invalid_entries = check_non_negative(test_df)
+    assert invalid_entries.count() > 0, "Non-negative test failed."
+
+    print("All tests passed.")
+
+# Run the unit tests
+run_tests()
+
+# Stop the Spark session
+spark.stop()
