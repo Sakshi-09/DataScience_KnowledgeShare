@@ -1,0 +1,47 @@
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+def find_channel_month_outliers(df):
+    """
+    Identify the number of days per channel per month where the volume is:
+    - Below the 10th percentile.
+    - Above the 90th percentile.
+
+    Returns:
+        low_outliers: DataFrame with count of days below the 10th percentile.
+        high_outliers: DataFrame with count of days above the 90th percentile.
+    """
+    # Extract year and month for grouping
+    df = df.withColumn("year_month", F.date_format(F.col("date"), "yyyy-MM"))
+
+    # Define the window for percentile calculations (per channel per month)
+    window_spec = Window.partitionBy("channel", "year_month").orderBy("volume")
+
+    # Calculate percent rank
+    df = df.withColumn("percent_rank", F.percent_rank().over(window_spec))
+
+    # Create flags for low and high outliers
+    df = df.withColumn("low_outlier", F.when(F.col("percent_rank") < 0.1, 1).otherwise(0))
+    df = df.withColumn("high_outlier", F.when(F.col("percent_rank") > 0.9, 1).otherwise(0))
+
+    # Count low outliers (days) per channel per month
+    low_outliers = df.groupBy("channel", "year_month").agg(
+        F.sum("low_outlier").alias("days_below_10th_percentile")
+    )
+
+    # Count high outliers (days) per channel per month
+    high_outliers = df.groupBy("channel", "year_month").agg(
+        F.sum("high_outlier").alias("days_above_90th_percentile")
+    )
+
+    return low_outliers, high_outliers
+
+# Example Usage
+low_outliers, high_outliers = find_channel_month_outliers(pipa_df)
+
+# Display the results
+print("Low Outliers (Days Below 10th Percentile):")
+low_outliers.show()
+
+print("High Outliers (Days Above 90th Percentile):")
+high_outliers.show()
