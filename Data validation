@@ -1,0 +1,65 @@
+# Import necessary PySpark libraries
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, max, count, isnan, when, lit
+
+# Initialize Spark session
+spark = SparkSession.builder \
+    .appName("Pipa Data Validation") \
+    .getOrCreate()
+
+# Load your dataset (assuming it's in a CSV format; modify as per your file type)
+file_path = "path_to_your_pipa_dataset.csv"
+pipa_df = spark.read.csv(file_path, header=True, inferSchema=True)
+
+# Display the initial dataset
+print("Initial DataFrame:")
+pipa_df.show()
+
+# Step 1: Check for duplicates
+duplicates_count = pipa_df.groupBy(pipa_df.columns).count().filter(col("count") > 1)
+if duplicates_count.count() > 0:
+    print("Duplicate rows found:")
+    duplicates_count.show()
+    # Optionally drop duplicates
+    pipa_df = pipa_df.dropDuplicates()
+else:
+    print("No duplicate rows found.")
+
+# Step 2: Check for null or missing values
+null_counts = pipa_df.select(
+    [count(when(col(c).isNull() | isnan(col(c)), c)).alias(c) for c in pipa_df.columns]
+)
+print("Null or Missing Value Counts:")
+null_counts.show()
+
+# Step 3: Get the maximum date channel-wise
+max_date_channel = pipa_df.groupBy("channel").agg(max("date").alias("max_date"))
+print("Maximum Date Channel-wise:")
+max_date_channel.show()
+
+# Step 4: Validate the volume and value columns (ensure they are non-negative)
+invalid_volume_value = pipa_df.filter((col("volume") < 0) | (col("value") < 0))
+if invalid_volume_value.count() > 0:
+    print("Invalid rows found with negative volume or value:")
+    invalid_volume_value.show()
+else:
+    print("All volume and value entries are valid.")
+
+# Optional: Add a validation status column
+pipa_df = pipa_df.withColumn(
+    "validation_status",
+    when(
+        col("volume") >= 0 & col("value") >= 0 & ~col("date").isNull(), lit("Valid")
+    ).otherwise(lit("Invalid"))
+)
+
+# Display the validated dataset
+print("Validated DataFrame:")
+pipa_df.show()
+
+# Save the validated dataset to a new file
+output_path = "path_to_validated_pipa_dataset.csv"
+pipa_df.write.csv(output_path, header=True)
+
+# Stop the Spark session
+spark.stop()
